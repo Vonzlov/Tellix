@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Секреты/переменные окружения
+.env
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# kind/kubeconfig
+kubeconfig*.yaml
+
+# Helm-пакеты
+charts/*.tgz
+
+# Логи
+*.log
