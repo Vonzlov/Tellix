@@ -1,0 +1,12 @@
+# The simplest possible workflow: two steps, the second depends on the
+# first. Each runs as its own Kubernetes Job in the "tellix" namespace.
+name: hello-tellix
+steps:
+  - name: say-hello
+    image: busybox:1.36
+    command: ["sh", "-c", "echo 'Hello from step 1!' && sleep 2"]
+
+  - name: say-world
+    image: busybox:1.36
+    depends_on: ["say-hello"]
+    command: ["sh", "-c", "echo 'World! This only ran after say-hello succeeded.'"]
