@@ -7,7 +7,7 @@ Kubernetes Job.
 ## Roadmap
 
 - [x] Phase 0: git/GitHub basics, project scaffolding
-- [ ] Phase 1: MVP - FastAPI + Kubernetes Jobs
+- [x] Phase 1: MVP - FastAPI + Kubernetes Jobs
 - [ ] Phase 2: CRD + kopf operator (Kubernetes-native workflows)
 - [ ] Phase 3: MinIO artifacts, web UI, Helm chart
 - [ ] Phase 4: Observability + CI/CD + GitOps
