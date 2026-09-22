@@ -1,5 +1,7 @@
 # Tellix
 
+[![CI](https://github.com/Vonzlov/Tellix/actions/workflows/ci.yml/badge.svg)](https://github.com/Vonzlov/Tellix/actions/workflows/ci.yml)
+
 Kubernetes-native workflow engine - a pet/portfolio project. Define a
 workflow as steps with dependencies; each step runs as its own
 Kubernetes Job.
@@ -159,6 +161,20 @@ process with no memory of it whatsoever - and drives it to completion:
 ```
 PYTHONPATH=. kopf run -m app.operator --namespace tellix --standalone --verbose
 ```
+
+## Continuous integration
+
+Every pull request, and every push to `main`, runs `ruff check` and the
+full test suite on GitHub Actions - see `.github/workflows/ci.yml`. The
+same two commands run locally:
+
+```
+ruff check .
+pytest -v
+```
+
+Worth running both before pushing: a red check on a pull request takes
+a minute to come back, a red terminal takes two seconds.
 
 ## Layout
 

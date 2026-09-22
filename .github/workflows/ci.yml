@@ -1,0 +1,55 @@
+# Runs on every pull request and on every push to main, so a change that
+# breaks the tests is visible in the pull request itself rather than
+# whenever someone next remembers to run pytest.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# If new commits land on a branch while its checks are still running,
+# cancel the older run - there is no point finishing a verdict about a
+# commit that is already out of date.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # No cluster here, and none needed: the scheduling rules, the
+      # workflow validation and the Job manifest building are all pure
+      # functions. Running the operator against a real kind cluster in
+      # CI is a separate job, added next.
+      - name: Run tests
+        run: pytest -v
