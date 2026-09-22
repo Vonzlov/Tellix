@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import hashlib
 
-from kubernetes import client, config as k8s_config
+from kubernetes import client
+from kubernetes import config as k8s_config
 
 from .models import PHASE_FAILED, PHASE_RUNNING, PHASE_SUCCEEDED, StepDef
 
