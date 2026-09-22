@@ -1,21 +1,26 @@
-"""Drives a workflow run: figures out which steps are ready, launches
-them as Kubernetes Jobs, polls until they finish, unlocks dependents.
+"""The scheduling rules of a workflow run - and nothing else.
+
+Everything here is a pure function of (workflow definition, run state).
+No Kubernetes, no network, no clock, no I/O. That is deliberate: this is
+the part with the actual logic in it, so it is the part that should be
+trivial to unit-test, and tests/test_engine.py runs it without a cluster.
+
+In Phase 1 this module also *drove* runs, with an asyncio loop that
+polled Kubernetes and mutated an in-memory store. That driving role now
+belongs to the operator (app/operator.py); what stayed behind is the
+decision-making.
 """
 from __future__ import annotations
 
-import asyncio
-import uuid
-from datetime import datetime, timezone
-
-from . import k8s_client
-from .models import StepDef, WorkflowDef, WorkflowRun, StepRunState
-from .store import store
-
-POLL_INTERVAL_SECONDS = 2
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from .models import (
+    PHASE_FAILED,
+    PHASE_PENDING,
+    PHASE_RUNNING,
+    PHASE_SUCCEEDED,
+    StepDef,
+    WorkflowDef,
+    WorkflowRun,
+)
 
 
 def ready_steps(workflow: WorkflowDef, run: WorkflowRun) -> list[StepDef]:
@@ -23,66 +28,34 @@ def ready_steps(workflow: WorkflowDef, run: WorkflowRun) -> list[StepDef]:
     ready = []
     for step in workflow.steps:
         state = run.steps[step.name]
-        if state.status != "pending":
+        if state.phase != PHASE_PENDING:
             continue
-        if all(run.steps[dep].status == "succeeded" for dep in step.depends_on):
+        if all(run.steps[dep].phase == PHASE_SUCCEEDED for dep in step.depends_on):
             ready.append(step)
     return ready
 
 
-async def start_workflow_run(workflow: WorkflowDef) -> WorkflowRun:
-    run_id = str(uuid.uuid4())
-    steps = {step.name: StepRunState(name=step.name) for step in workflow.steps}
-    run = WorkflowRun(
-        id=run_id,
-        workflow_name=workflow.name,
-        steps=steps,
-        created_at=_now(),
-    )
-    store.save(run)
+def overall_phase(workflow: WorkflowDef, run: WorkflowRun) -> str:
+    """Derive the run's phase from the phases of its steps.
 
-    k8s_client.ensure_namespace()
-    asyncio.create_task(_drive_run(workflow, run))
-    return run
+    Order matters here: one failed step fails the whole run even if
+    others are still going, because nothing downstream of it can ever
+    become ready.
+    """
+    phases = [state.phase for state in run.steps.values()]
 
+    if any(phase == PHASE_FAILED for phase in phases):
+        return PHASE_FAILED
+    if all(phase == PHASE_SUCCEEDED for phase in phases):
+        return PHASE_SUCCEEDED
+    if any(phase == PHASE_RUNNING for phase in phases):
+        return PHASE_RUNNING
+    if ready_steps(workflow, run):
+        return PHASE_RUNNING
 
-async def _drive_run(workflow: WorkflowDef, run: WorkflowRun) -> None:
-    while True:
-        for step in ready_steps(workflow, run):
-            state = run.steps[step.name]
-            state.status = "launching"
-            store.save(run)
-            state.job_name = k8s_client.create_job_for_step(run.id, step)
-            state.status = "running"
-            state.started_at = _now()
-            store.save(run)
-
-        any_running = False
-        for state in run.steps.values():
-            if state.status == "running" and state.job_name:
-                any_running = True
-                k8s_status = k8s_client.get_job_status(state.job_name)
-                if k8s_status in ("succeeded", "failed"):
-                    state.status = k8s_status
-                    state.finished_at = _now()
-                    state.logs = k8s_client.get_pod_logs(state.job_name)
-                    store.save(run)
-
-        statuses = [s.status for s in run.steps.values()]
-        if any(s == "failed" for s in statuses):
-            run.status = "failed"
-            store.save(run)
-            return
-        if all(s == "succeeded" for s in statuses):
-            run.status = "succeeded"
-            store.save(run)
-            return
-        if not any_running and not ready_steps(workflow, run):
-            # Nothing running and nothing ready, but not everything
-            # succeeded either - a cycle in depends_on, or a typo'd
-            # dependency name. Fail loudly instead of hanging forever.
-            run.status = "failed"
-            store.save(run)
-            return
-
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+    # Nothing running, nothing ready, and not everything succeeded. The
+    # run cannot make progress on its own. WorkflowDef rejects cycles and
+    # unknown dependencies at submit time, so reaching this means state
+    # was edited out from under us - fail loudly rather than sit in
+    # Running forever.
+    return PHASE_FAILED

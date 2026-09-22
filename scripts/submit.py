@@ -5,6 +5,7 @@ Usage: python scripts/submit.py examples/hello-workflow.yaml
 """
 import json
 import sys
+import urllib.error
 import urllib.request
 
 import yaml
@@ -27,12 +28,21 @@ def main() -> None:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"Server returned {e.code}:\n{body}")
+        sys.exit(1)
 
     print(json.dumps(result, indent=2))
-    print(f"\nRun ID: {result['id']}")
-    print(f"Check status: curl {SERVER}/workflows/runs/{result['id']} | python3 -m json.tool")
+    run_id = result["id"]
+    print(f"\nRun ID: {run_id}")
+    print("\nWatch it any of these ways:")
+    print(f"  curl -s {SERVER}/workflows/runs/{run_id} | python3 -m json.tool")
+    print(f"  kubectl get workflowrun {run_id} -n tellix -w")
+    print(f"  kubectl describe workflowrun {run_id} -n tellix")
 
 
 if __name__ == "__main__":
