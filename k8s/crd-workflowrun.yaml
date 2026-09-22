@@ -1,0 +1,119 @@
+# The CustomResourceDefinition that teaches this Kubernetes cluster a new
+# object type: WorkflowRun, in the API group tellix.dev.
+#
+# A CRD is only a *schema*. It tells the API server what a valid
+# WorkflowRun looks like, how to validate it, how to store it in etcd and
+# how to serve it over the API - after applying this you can already run
+# `kubectl get workflowruns`. It does not make anything happen on its
+# own: acting on these objects is the operator's job (app/operator.py).
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  # The name is not free-form: it must be exactly <plural>.<group>.
+  name: workflowruns.tellix.dev
+spec:
+  group: tellix.dev
+  # Namespaced (rather than Cluster) scope, so runs live in the tellix
+  # namespace next to the Jobs they create.
+  scope: Namespaced
+  names:
+    kind: WorkflowRun
+    plural: workflowruns
+    singular: workflowrun
+    shortNames:
+      - wfr
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        # Giving status its own subresource means spec and status are
+        # written through separate API endpoints. Users own spec, the
+        # operator owns status, and neither can clobber the other in a
+        # single write.
+        status: {}
+      additionalPrinterColumns:
+        - name: Workflow
+          type: string
+          jsonPath: .spec.workflowName
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        # Kubernetes validates every WorkflowRun against this schema
+        # before storing it, so a typo'd field is rejected by the API
+        # server itself rather than blowing up in the operator later.
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - workflowName
+                - steps
+              properties:
+                workflowName:
+                  type: string
+                steps:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required:
+                      - name
+                      - image
+                    properties:
+                      name:
+                        type: string
+                        # DNS-1123 label rules - the step name ends up in
+                        # a Kubernetes object name.
+                        pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+                      image:
+                        type: string
+                      command:
+                        type: array
+                        items:
+                          type: string
+                      dependsOn:
+                        type: array
+                        items:
+                          type: string
+                      env:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      timeoutSeconds:
+                        type: integer
+                        minimum: 1
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Running
+                    - Succeeded
+                    - Failed
+                startedAt:
+                  type: string
+                finishedAt:
+                  type: string
+                steps:
+                  type: object
+                  additionalProperties:
+                    type: object
+                    properties:
+                      phase:
+                        type: string
+                      jobName:
+                        type: string
+                      startedAt:
+                        type: string
+                      finishedAt:
+                        type: string
+                      logs:
+                        type: string
