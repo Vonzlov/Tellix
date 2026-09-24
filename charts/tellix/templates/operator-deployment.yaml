@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tellix.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tellix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  # Exactly one. See the note in values.yaml: two operators would race
+  # each other over the same runs.
+  replicas: 1
+  strategy:
+    # Stop the old operator before starting the new one, for the same
+    # reason. A few seconds with no operator costs nothing - runs live in
+    # the cluster and the new pod resumes them on startup.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "tellix.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        {{- include "tellix.labels" . | nindent 8 }}
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: {{ include "tellix.fullname" . }}-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: operator
+          image: {{ include "tellix.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - kopf
+            - run
+            - --module=app.operator
+            - --namespace={{ .Release.Namespace }}
+            # No peer coordination, because there is only ever one of us.
+            - --standalone
+            {{- if eq .Values.operator.logLevel "debug" }}
+            - --verbose
+            {{- end }}
+            # kopf serves a health endpoint here when asked to, which is
+            # what the probe below checks.
+            - --liveness=http://0.0.0.0:8080/healthz
+          env:
+            # The namespace Tellix works in is wherever it was installed,
+            # read from the pod itself rather than hard-coded.
+            - name: TELLIX_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: health
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+          volumeMounts:
+            # The root filesystem is read-only, so hand over a scratch
+            # directory rather than hoping nothing ever writes one.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

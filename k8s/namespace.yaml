@@ -1,6 +1,0 @@
-# Everything Tellix creates lives in its own namespace, so `kubectl
-# delete namespace tellix` is a complete cleanup.
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: tellix
