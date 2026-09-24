@@ -1,0 +1,12 @@
+apiVersion: v2
+name: tellix
+description: Kubernetes-native workflow engine - runs each workflow step as a Job
+type: application
+# version is the chart's own version; appVersion is the Tellix release it
+# installs by default, and doubles as the default image tag.
+version: 0.1.0
+appVersion: "0.3.0"
+keywords:
+  - workflow
+  - operator
+  - jobs

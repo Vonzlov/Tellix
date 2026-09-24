@@ -1,0 +1,19 @@
+Tellix is installed in namespace {{ .Release.Namespace }}.
+
+Reach the API from your machine:
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "tellix.fullname" . }}-api {{ .Values.api.service.port }}:{{ .Values.api.service.port }}
+  curl -s http://localhost:{{ .Values.api.service.port }}/health
+
+Submit a workflow, either through the API:
+
+  python scripts/submit.py examples/hello-workflow.yaml
+
+or with kubectl alone, since a run is just an object in the cluster:
+
+  kubectl apply -n {{ .Release.Namespace }} -f examples/hello-workflowrun.yaml
+
+Then watch it:
+
+  kubectl get workflowruns -n {{ .Release.Namespace }} -w
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/component=operator -f

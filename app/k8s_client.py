@@ -11,13 +11,20 @@ what the Job actually looks like - can be unit-tested without a cluster.
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 
 from kubernetes import client
 from kubernetes import config as k8s_config
 
 from .models import PHASE_FAILED, PHASE_RUNNING, PHASE_SUCCEEDED, StepDef
 
-NAMESPACE = "tellix"
+logger = logging.getLogger(__name__)
+
+# Running in the cluster, this is whichever namespace the pod was
+# installed into - the Deployments pass it down through the downward API.
+# Running from a laptop, it falls back to the conventional name.
+NAMESPACE = os.environ.get("TELLIX_NAMESPACE", "tellix")
 
 # Kubernetes object names are capped at 63 characters (DNS-1123 label).
 MAX_NAME_LENGTH = 63
@@ -45,17 +52,34 @@ def load_config() -> None:
 
 
 def ensure_namespace() -> None:
+    """Make sure the working namespace exists. Best effort, by design.
+
+    From a laptop this creates the namespace on first use, which is a
+    convenience. Inside the cluster it is expected to fail with 403: the
+    namespace is created by whoever installed Tellix, and neither pod is
+    granted permission to create namespaces. That refusal is the system
+    working correctly, not a problem to report.
+    """
     load_config()
     v1 = client.CoreV1Api()
     try:
         v1.read_namespace(NAMESPACE)
+        return
     except client.exceptions.ApiException as e:
-        if e.status == 404:
-            v1.create_namespace(
-                client.V1Namespace(metadata=client.V1ObjectMeta(name=NAMESPACE))
-            )
-        else:
+        if e.status == 403:
+            return
+        if e.status != 404:
             raise
+
+    try:
+        v1.create_namespace(
+            client.V1Namespace(metadata=client.V1ObjectMeta(name=NAMESPACE))
+        )
+    except client.exceptions.ApiException as e:
+        # 409 means someone else created it first, which is fine.
+        if e.status not in (403, 409):
+            raise
+        logger.debug("not creating namespace %s: %s", NAMESPACE, e.reason)
 
 
 def job_name_for(run_id: str, step_name: str) -> str:
@@ -138,7 +162,13 @@ def get_job_phase(job_name: str) -> str | None:
     load_config()
     batch = client.BatchV1Api()
     try:
-        job = batch.read_namespaced_job_status(job_name, NAMESPACE)
+        # A plain read of the Job, not read_namespaced_job_status. That one
+        # goes through the separate jobs/status subresource, which needs an
+        # RBAC permission of its own - and returns exactly the same object.
+        # Running in the cluster under a least-privilege ServiceAccount is
+        # what surfaced this; a laptop kubeconfig is cluster-admin and never
+        # notices the difference.
+        job = batch.read_namespaced_job(job_name, NAMESPACE)
     except client.exceptions.ApiException as e:
         if e.status == 404:
             return None

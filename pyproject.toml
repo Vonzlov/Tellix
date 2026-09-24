@@ -1,3 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tellix"
+version = "0.3.0"
+description = "Kubernetes-native workflow engine"
+readme = "README.md"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.setuptools.dynamic]
+# One source of truth for runtime dependencies: the same requirements.txt
+# that a local venv and the Docker image install from.
+dependencies = { file = ["requirements.txt"] }
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

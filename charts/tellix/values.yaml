@@ -1,0 +1,35 @@
+image:
+  repository: tellix
+  # Defaults to the chart's appVersion when left empty.
+  tag: ""
+  # IfNotPresent, not Always: on a local kind cluster the image is side-
+  # loaded with `kind load docker-image`, never pulled from a registry.
+  pullPolicy: IfNotPresent
+
+operator:
+  # Deliberately not configurable. A second operator would reconcile the
+  # same runs in parallel and race with the first. kopf can coordinate
+  # replicas through peering; until that is set up, one is the only safe
+  # number, and pretending otherwise in values.yaml would be a trap.
+  logLevel: info
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+api:
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# Extra labels applied to every object the chart creates.
+commonLabels: {}

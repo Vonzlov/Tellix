@@ -131,14 +131,19 @@ def delete_run(name: str) -> bool:
 
 
 def crd_installed() -> bool:
-    """Whether the WorkflowRun CRD has been applied to this cluster."""
+    """Whether the WorkflowRun CRD has been applied to this cluster.
+
+    Reported by /health as a setup hint, so a 403 is answered the same
+    way as a 404: we cannot confirm the type is there.
+    """
+    k8s_client.load_config()
     try:
         client.ApiextensionsV1Api().read_custom_resource_definition(
             f"{PLURAL}.{GROUP}"
         )
         return True
     except client.exceptions.ApiException as e:
-        if e.status == 404:
+        if e.status in (403, 404):
             return False
         raise
 

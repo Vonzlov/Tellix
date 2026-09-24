@@ -1,6 +1,6 @@
 # Runs on every pull request and on every push to main, so a change that
-# breaks the tests is visible in the pull request itself rather than
-# whenever someone next remembers to run pytest.
+# breaks something is visible in the pull request itself rather than
+# whenever someone next remembers to check.
 name: CI
 
 on:
@@ -49,7 +49,81 @@ jobs:
 
       # No cluster here, and none needed: the scheduling rules, the
       # workflow validation and the Job manifest building are all pure
-      # functions. Running the operator against a real kind cluster in
-      # CI is a separate job, added next.
+      # functions. Whether the whole thing actually works in Kubernetes
+      # is the e2e job's question, not this one's.
       - name: Run tests
         run: pytest -v
+
+  e2e:
+    name: e2e (kind)
+    runs-on: ubuntu-latest
+    # Only worth spending three minutes on a cluster if the cheap checks
+    # already passed.
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint the Helm chart
+        run: helm lint charts/tellix
+
+      # A real Kubernetes cluster, in Docker, on the runner.
+      - name: Create a kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: tellix
+
+      - name: Build the image
+        run: docker build -t tellix:ci .
+
+      # kind nodes have their own container runtime, so an image built on
+      # the runner is not visible to them until it is side-loaded.
+      - name: Load the image into the cluster
+        run: kind load docker-image tellix:ci --name tellix
+
+      - name: Install the chart
+        run: |
+          helm install tellix ./charts/tellix \
+            --namespace tellix --create-namespace \
+            --set image.tag=ci \
+            --wait --timeout 3m
+
+      - name: Show what got installed
+        run: kubectl get all,serviceaccounts,roles,rolebindings -n tellix
+
+      # The operator's half: a run created with nothing but kubectl has
+      # to reach Succeeded on its own.
+      - name: Run a workflow with kubectl alone
+        run: |
+          kubectl apply -n tellix -f examples/hello-workflowrun.yaml
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
+            workflowrun/hello-from-kubectl -n tellix --timeout=180s
+
+      - name: Check the recorded step output
+        run: |
+          kubectl get workflowrun hello-from-kubectl -n tellix \
+            -o jsonpath='{.status.steps.say-world.logs}' | tee /tmp/logs
+          grep -q "This only ran after say-hello succeeded" /tmp/logs
+
+      # The API's half, including whether its ServiceAccount has the
+      # permissions it actually needs.
+      - name: Submit a workflow through the API
+        run: |
+          kubectl port-forward -n tellix svc/tellix-api 8000:8000 &
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:8000/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://localhost:8000/health
+          curl -sf -X POST http://localhost:8000/workflows/runs \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"api-smoke","steps":[{"name":"ping","image":"busybox:1.36","command":["sh","-c","echo ok"]}]}'
+          kubectl get workflowruns -n tellix
+
+      # Whatever went wrong, the answer is almost always in one of these.
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get workflowruns,jobs,pods -n tellix -o wide || true
+          kubectl describe workflowrun hello-from-kubectl -n tellix || true
+          kubectl logs -n tellix -l app.kubernetes.io/component=operator --tail=200 || true
+          kubectl logs -n tellix -l app.kubernetes.io/component=api --tail=100 || true

@@ -1,0 +1,157 @@
+# Until now the operator ran on a laptop under a personal kubeconfig,
+# which on a kind cluster means full administrator rights over
+# everything. Inside the cluster it gets exactly these verbs on exactly
+# these resources, and nothing else - if it ever tries to do something
+# not listed here, the API server refuses and says so in the logs.
+
+# --- operator ---------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "tellix.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tellix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+rules:
+  # Watch for runs appearing and changing, and write progress back.
+  # `patch` also covers the annotations kopf uses for its own bookkeeping.
+  - apiGroups: ["tellix.dev"]
+    resources: ["workflowruns"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # status is a separate subresource with its own endpoint, so writing to
+  # it needs its own permission.
+  - apiGroups: ["tellix.dev"]
+    resources: ["workflowruns/status"]
+    verbs: ["get", "patch", "update"]
+  # One Job per workflow step.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # Finding the pod a Job created, and reading what it printed.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # kopf posts its decisions as Events on the run itself, which is what
+  # makes `kubectl describe workflowrun` explain what happened.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "tellix.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tellix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "tellix.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tellix.fullname" . }}-operator
+    namespace: {{ .Release.Namespace }}
+---
+# kopf itself also watches two cluster-scoped kinds, so that it notices
+# resource types and namespaces appearing or disappearing while it runs.
+# Read-only. Without these the operator still works, but kopf logs
+# permission warnings and only discovers such changes on restart.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "tellix.fullname" . }}-{{ .Release.Namespace }}-operator-observer
+  labels:
+    {{- include "tellix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "tellix.fullname" . }}-{{ .Release.Namespace }}-operator-observer
+  labels:
+    {{- include "tellix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "tellix.fullname" . }}-{{ .Release.Namespace }}-operator-observer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tellix.fullname" . }}-operator
+    namespace: {{ .Release.Namespace }}
+---
+# --- api --------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "tellix.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tellix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+rules:
+  # Submitting a workflow creates a run; reading one reads it back.
+  # Notice what is absent: no jobs, no pods, no writing to status. The
+  # API server process cannot start a single container even if it tried.
+  - apiGroups: ["tellix.dev"]
+    resources: ["workflowruns"]
+    verbs: ["create", "get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "tellix.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tellix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "tellix.fullname" . }}-api
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tellix.fullname" . }}-api
+    namespace: {{ .Release.Namespace }}
+---
+# CustomResourceDefinitions are cluster-scoped, so checking whether the
+# WorkflowRun type is installed - which /health reports - cannot be done
+# with a namespaced Role. One read verb, cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "tellix.fullname" . }}-{{ .Release.Namespace }}-crd-reader
+  labels:
+    {{- include "tellix.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "tellix.fullname" . }}-{{ .Release.Namespace }}-crd-reader
+  labels:
+    {{- include "tellix.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "tellix.fullname" . }}-{{ .Release.Namespace }}-crd-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tellix.fullname" . }}-api
+    namespace: {{ .Release.Namespace }}

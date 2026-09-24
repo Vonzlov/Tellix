@@ -1,0 +1,27 @@
+# The same two-step workflow as hello-workflow.yaml, but written as the
+# custom resource itself rather than as input for the HTTP API.
+#
+# This is the point of Phase 2 stated as plainly as it can be: Tellix
+# needs no client of its own. A run is an object in the cluster, so
+# `kubectl apply` is a complete way to start one, and the operator picks
+# it up exactly as if it had come through the API.
+#
+#   kubectl apply -n tellix -f examples/hello-workflowrun.yaml
+#   kubectl get workflowruns -n tellix -w
+apiVersion: tellix.dev/v1alpha1
+kind: WorkflowRun
+metadata:
+  name: hello-from-kubectl
+spec:
+  workflowName: hello-tellix
+  steps:
+    - name: say-hello
+      image: busybox:1.36
+      command: ["sh", "-c", "echo 'Hello from step 1!' && sleep 2"]
+
+    - name: say-world
+      image: busybox:1.36
+      # camelCase here, because this is a Kubernetes object. The API
+      # accepts either spelling; the cluster stores this one.
+      dependsOn: ["say-hello"]
+      command: ["sh", "-c", "echo 'World! This only ran after say-hello succeeded.'"]

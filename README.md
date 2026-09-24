@@ -11,13 +11,17 @@ Kubernetes Job.
 - [x] Phase 0: git/GitHub basics, project scaffolding
 - [x] Phase 1: MVP - FastAPI + Kubernetes Jobs
 - [x] Phase 2: CRD + kopf operator (Kubernetes-native workflows)
-- [ ] Phase 3: MinIO artifacts, web UI, Helm chart
-- [ ] Phase 4: Observability + CI/CD + GitOps
+- [x] CI: ruff and pytest on every pull request
+- [x] Packaging: container image, RBAC, Helm chart, end-to-end CI
+- [ ] Artifacts passed between steps (MinIO)
+- [ ] Web UI
+- [ ] Observability: metrics and structured logs
+- [ ] GitOps deployment
 
 ## How it works
 
-A workflow is submitted as YAML - named steps, each a container image,
-wired together by `depends_on`:
+A workflow is a set of named steps, each a container image, wired
+together by dependencies:
 
 ```yaml
 name: hello-tellix
@@ -32,149 +36,157 @@ steps:
     command: ["sh", "-c", "echo 'World!'"]
 ```
 
-Three moving parts turn that into running containers:
+Three pieces turn that into running containers.
 
-**The CRD** (`k8s/crd-workflowrun.yaml`) teaches the cluster a new object
-type, `WorkflowRun`, in the API group `tellix.dev`. After applying it,
-`kubectl get workflowruns` works exactly like `kubectl get pods` -
-Kubernetes validates these objects against our schema and stores them in
-etcd. A CRD is only a schema, though: on its own it makes nothing happen.
+**The CRD** (`charts/tellix/crds/workflowrun.yaml`) teaches the cluster a
+new object type, `WorkflowRun`, in the API group `tellix.dev`. After it
+is applied, `kubectl get workflowruns` works exactly like `kubectl get
+pods` - the API server validates these objects against our schema and
+stores them in etcd. A CRD is only a schema, though: on its own it makes
+nothing happen.
 
 **The API** (`app/main.py`) is a thin FastAPI service. `POST
 /workflows/runs` validates the workflow and creates a `WorkflowRun`
 resource. That is the entire request. It starts no Jobs and remembers
-nothing.
+nothing - and its ServiceAccount is not permitted to touch a Job even if
+it wanted to.
 
 **The operator** (`app/operator.py`) is a separate process that watches
 `WorkflowRun` resources and reconciles them: launch every step whose
 dependencies have succeeded, check the Jobs of steps already running,
 write the results back into the resource's `status`. It is built on
 [kopf](https://kopf.readthedocs.io/), which is to Kubernetes controllers
-roughly what FastAPI is to HTTP servers - you write handlers, it deals
-with watching, retries and backoff.
+roughly what FastAPI is to HTTP servers.
 
-The reason for splitting it up this way is that **the cluster holds all
-the state**. Phase 1 kept runs in a Python dict inside the API process,
-which meant every restart - including the automatic one `uvicorn
---reload` does when you save a file - silently threw away every run in
-flight, while the Kubernetes Jobs they had started kept going, orphaned.
-Now a run *is* an object in the cluster. Kill the operator mid-run and
-start it again; it reads the resource, sees which Jobs already exist, and
-carries on. There is a demo of exactly that below.
+The reason for splitting it this way is that **the cluster holds all the
+state**. Phase 1 kept runs in a Python dict inside the API process, so
+every restart silently threw away every run in flight while the Jobs they
+had started kept going, orphaned. Now a run *is* an object in the
+cluster. Kill the operator mid-run and start it again; it reads the
+resource, sees which Jobs already exist, and carries on.
 
-## Quickstart
+It also means Tellix needs no client of its own:
 
-### One-time setup
+```
+kubectl apply -n tellix -f examples/hello-workflowrun.yaml
+```
+
+is a complete way to start a run.
+
+## Install into a cluster
+
+```
+# a local cluster, if you do not already have one
+kind create cluster --name tellix
+
+# build the image and side-load it, since kind nodes cannot pull from
+# your local Docker daemon
+docker build -t tellix:dev .
+kind load docker-image tellix:dev --name tellix
+
+helm install tellix ./charts/tellix \
+  --namespace tellix --create-namespace \
+  --set image.tag=dev
+```
+
+That installs the CRD, two ServiceAccounts with their own RBAC rules, the
+operator and the API. Check it:
+
+```
+kubectl get all -n tellix
+kubectl apply -n tellix -f examples/hello-workflowrun.yaml
+kubectl get workflowruns -n tellix -w
+```
+
+To reach the HTTP API from your machine:
+
+```
+kubectl port-forward -n tellix svc/tellix-api 8000:8000
+curl -s http://localhost:8000/health
+```
+
+After changing code, rebuild, reload and restart the pods:
+
+```
+docker build -t tellix:dev .
+kind load docker-image tellix:dev --name tellix
+kubectl rollout restart deployment -n tellix
+```
+
+The restart is not optional. The image tag is still `dev`, so from
+Kubernetes' point of view nothing about the Deployments changed and it
+has no reason to replace the running pods. After changing the chart
+itself - RBAC rules, say - run `helm upgrade` with the same arguments as
+`helm install` (minus `--create-namespace`) before the restart.
+
+Uninstall with `helm uninstall tellix -n tellix`. The CRD is left behind
+on purpose - Helm never deletes CRDs, because doing so would delete every
+object of that type along with them.
+
+## Develop from source
+
+Running the two processes on your machine against the cluster is faster
+to iterate on than rebuilding an image each time.
 
 ```
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements-dev.txt
+pip install -e .
 
-# local Kubernetes cluster (stays around between runs)
 kind create cluster --name tellix
-
-# create the namespace and register the WorkflowRun type
-kubectl apply -f k8s/
-
-# the cluster now knows about a type it did not ship with:
-kubectl get crd workflowruns.tellix.dev
-kubectl get workflowruns -n tellix
+kubectl create namespace tellix
+kubectl apply -f charts/tellix/crds/
 ```
 
-### Run the tests
-
-No cluster required - the scheduling rules, workflow validation and
-manifest building are all pure functions:
+Terminal 1, the operator:
 
 ```
-pytest -v
+kopf run -m app.operator --namespace tellix --standalone --verbose
 ```
 
-### Start the two processes
-
-Terminal 1 - the operator:
-
-```
-PYTHONPATH=. kopf run -m app.operator --namespace tellix --standalone --verbose
-```
-
-Terminal 2 - the API:
+Terminal 2, the API:
 
 ```
 uvicorn app.main:app --reload --reload-dir app --port 8000
 ```
-
-`--standalone` tells kopf not to look for peer operators (relevant only
-when several replicas coordinate who is in charge). `--reload-dir app`
-keeps uvicorn's file watcher off the venv and caches.
-
-`PYTHONPATH=.` is needed because `kopf` is a console script installed in
-the venv: unlike `python -m`, it puts the venv's `bin/` on `sys.path`
-rather than the current directory, so the `app` package would not be
-found. Phase 3 makes the project a proper installable package and this
-goes away.
-
-### Submit a workflow
 
 Terminal 3:
 
 ```
 python scripts/submit.py examples/hello-workflow.yaml
 python scripts/submit.py examples/ml-pipeline.yaml
-```
-
-Then watch it, whichever way you prefer:
-
-```
 kubectl get workflowruns -n tellix
-kubectl get workflowrun <run-id> -n tellix -o yaml
-kubectl describe workflowrun <run-id> -n tellix     # includes operator events
-kubectl get jobs,pods -n tellix
-
-curl -s http://localhost:8000/workflows/runs/<run-id> | python3 -m json.tool
 ```
 
-Deleting a run cleans up after itself - the Jobs it created are its
-children via `ownerReferences`, so Kubernetes garbage-collects them:
-
-```
-kubectl delete workflowrun <run-id> -n tellix
-```
+`--standalone` tells kopf not to look for peer operators. `--reload-dir
+app` keeps uvicorn's file watcher off the venv and caches. `pip install
+-e .` is what makes `app` importable from anywhere, so `kopf run -m
+app.operator` no longer needs a `PYTHONPATH` in front of it.
 
 ### Demo: state survives the process
 
-This is the thing Phase 2 exists for. Submit the ML pipeline, then kill
-the operator while it is still running:
+Submit the ML pipeline, then kill the operator with Ctrl-C while it is
+still running. The run and its Jobs are untouched - they live in the
+cluster, not in that process. Start the operator again and its
+`@kopf.on.resume` handler picks the run up and drives it to completion.
 
-```
-python scripts/submit.py examples/ml-pipeline.yaml
-# ...in the operator's terminal, hit Ctrl-C mid-run
-kubectl get workflowrun <run-id> -n tellix -o yaml   # status is still there
-```
+## Tests and CI
 
-The run is untouched, and so are its Jobs. Start the operator again and
-its `@kopf.on.resume` handler picks the run up from the resource - a
-process with no memory of it whatsoever - and drives it to completion:
+Every pull request runs three jobs: `ruff`, `pytest`, and an end-to-end
+job that creates a real kind cluster, installs the chart into it and runs
+a workflow through to `Succeeded`. See `.github/workflows/ci.yml`.
 
-```
-PYTHONPATH=. kopf run -m app.operator --namespace tellix --standalone --verbose
-```
-
-## Continuous integration
-
-Every pull request, and every push to `main`, runs `ruff check` and the
-full test suite on GitHub Actions - see `.github/workflows/ci.yml`. The
-same two commands run locally:
+Locally:
 
 ```
 ruff check .
 pytest -v
 ```
 
-Worth running both before pushing: a red check on a pull request takes
-a minute to come back, a red terminal takes two seconds.
+Worth running both before pushing: a red check on a pull request takes a
+minute to come back, a red terminal takes two seconds.
 
 ## Layout
 
@@ -189,20 +201,23 @@ app/crd.py         create/read/delete WorkflowRun resources; converts
 app/k8s_client.py  namespace, Job manifests, Job status, pod logs.
 app/operator.py    the kopf handlers and the reconcile function.
 app/main.py        the FastAPI service.
-k8s/               the CRD and namespace manifests.
-examples/          two demo workflows.
+charts/tellix/     Helm chart: the CRD, ServiceAccounts, RBAC, and a
+                   Deployment each for the operator and the API.
+Dockerfile         one image for both roles.
+examples/          demo workflows, as API input and as a raw resource.
 scripts/submit.py  submit a workflow YAML to the API.
 ```
 
 ## Known limitations
 
-- Steps do not share a filesystem, so nothing can be handed from one
-  step to the next yet. `examples/ml-pipeline.yaml` regenerates its
-  dataset from a fixed seed instead of reading a file the previous step
-  wrote. Artifact passing via MinIO is Phase 3.
-- The operator runs on your laptop against the cluster, not inside it.
-  Packaging it as a Deployment with its own ServiceAccount and RBAC
-  rules is Phase 3, along with a Helm chart.
+- Steps do not share a filesystem, so nothing can be handed from one step
+  to the next yet. `examples/ml-pipeline.yaml` regenerates its dataset
+  from a fixed seed instead of reading a file the previous step wrote.
+  Artifact passing via MinIO is next.
+- The operator runs as a single replica and does not coordinate with
+  peers. Two of them would race over the same runs, which is why the
+  chart hard-codes `replicas: 1` rather than exposing it as a value.
 - Step logs are copied into the run's status, capped at the last 4000
-  characters. Kubernetes resources are not a log store; real log
-  shipping is Phase 4.
+  characters. Kubernetes resources are not a log store.
+- The image is built and side-loaded by hand. Publishing it to a registry
+  from CI comes with the GitOps step.
